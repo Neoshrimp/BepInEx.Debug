@@ -71,7 +71,7 @@ namespace ScriptEngine
             }
         }
 
-        private void ReloadPlugins()
+        public void ReloadPlugins()
         {
             shouldReload = false;
 
