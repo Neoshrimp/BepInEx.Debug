@@ -25,30 +25,43 @@ namespace ScriptEngine
 
         GameObject scriptManager;
 
+
+
+
         ConfigEntry<bool> LoadOnStart { get; set; }
-        ConfigEntry<KeyboardShortcut> ReloadKey { get; set; }
+        internal  ConfigEntry<KeyboardShortcut> ReloadKey { get; set; }
 
         void Awake()
         {
             LoadOnStart = Config.Bind("General", "LoadOnStart", false, new ConfigDescription("Load all plugins from the scripts folder when starting the application"));
             ReloadKey = Config.Bind("General", "ReloadKey", new KeyboardShortcut(KeyCode.F6), new ConfigDescription("Press this key to reload all the plugins from the scripts folder"));
 
+
+            DontDestroyOnLoad(this.gameObject);
+            gameObject.hideFlags = HideFlags.HideAndDontSave;
+
             if (LoadOnStart.Value)
                 ReloadPlugins();
+
         }
 
-        void Update()
+
+
+        private void Update()
         {
             if (ReloadKey.Value.IsDown())
                 ReloadPlugins();
         }
 
-        void ReloadPlugins()
+
+
+        public void ReloadPlugins()
         {
             Logger.Log(LogLevel.Info, "Unloading old plugin instances");
             Destroy(scriptManager);
             scriptManager = new GameObject($"ScriptEngine_{DateTime.Now.Ticks}");
             DontDestroyOnLoad(scriptManager);
+            scriptManager.hideFlags = HideFlags.HideAndDontSave;
 
             var files = Directory.GetFiles(ScriptDirectory, "*.dll");
             if (files.Length > 0)
@@ -100,7 +113,7 @@ namespace ScriptEngine
                                     {
                                         try
                                         {
-                                            obj.AddComponent(type);
+                                            obj.gameObject.AddComponent(type);
                                         }
                                         catch (Exception e)
                                         {
