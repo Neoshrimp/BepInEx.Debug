@@ -11,6 +11,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using Common;
+using HarmonyLib;
 using UnityEngine;
 
 namespace ScriptEngine
@@ -23,18 +24,27 @@ namespace ScriptEngine
 
         public string ScriptDirectory => Path.Combine(Paths.BepInExRootPath, "scripts");
 
-        GameObject scriptManager;
+        private GameObject scriptManager;
 
+        private ConfigEntry<bool> LoadOnStart { get; set; }
+        private ConfigEntry<KeyboardShortcut> ReloadKey { get; set; }
+        private ConfigEntry<bool> QuietMode { get; set; }
+        private ConfigEntry<bool> EnableFileSystemWatcher { get; set; }
+        private ConfigEntry<bool> IncludeSubdirectories { get; set; }
+        private ConfigEntry<float> AutoReloadDelay { get; set; }
 
+        private FileSystemWatcher fileSystemWatcher;
+        private bool shouldReload;
+        private float autoReloadTimer;
 
-
-        ConfigEntry<bool> LoadOnStart { get; set; }
-        internal  ConfigEntry<KeyboardShortcut> ReloadKey { get; set; }
-
-        void Awake()
+        private void Awake()
         {
-            LoadOnStart = Config.Bind("General", "LoadOnStart", false, new ConfigDescription("Load all plugins from the scripts folder when starting the application"));
+            LoadOnStart = Config.Bind("General", "LoadOnStart", false, new ConfigDescription("Load all plugins from the scripts folder when starting the application. This is done from inside of Chainloader's Awake, therefore not all plugis might be loaded yet. BepInDependency attributes are ignored."));
             ReloadKey = Config.Bind("General", "ReloadKey", new KeyboardShortcut(KeyCode.F6), new ConfigDescription("Press this key to reload all the plugins from the scripts folder"));
+            QuietMode = Config.Bind("General", "QuietMode", false, new ConfigDescription("Disable all logging except for error messages."));
+            IncludeSubdirectories = Config.Bind("General", "IncludeSubdirectories", false, new ConfigDescription("Also load plugins from subdirectories of the scripts folder."));
+            EnableFileSystemWatcher = Config.Bind("AutoReload", "EnableFileSystemWatcher", false, new ConfigDescription("Watches the scripts directory for file changes and automatically reloads all plugins if any of the files gets changed (added/removed/modified)."));
+            AutoReloadDelay = Config.Bind("AutoReload", "AutoReloadDelay", 3.0f, new ConfigDescription("Delay in seconds from detecting a change to files in the scripts directory to plugins being reloaded. Affects only EnableFileSystemWatcher."));
 
 
             DontDestroyOnLoad(this.gameObject);
@@ -43,48 +53,71 @@ namespace ScriptEngine
             if (LoadOnStart.Value)
                 ReloadPlugins();
 
+            if (EnableFileSystemWatcher.Value)
+                StartFileSystemWatcher();
         }
-
-
 
         private void Update()
         {
             if (ReloadKey.Value.IsDown())
+            {
                 ReloadPlugins();
+            }
+            else if (shouldReload)
+            {
+                autoReloadTimer -= Time.unscaledDeltaTime;
+                if (autoReloadTimer <= .0f)
+                    ReloadPlugins();
+            }
         }
 
-
-
-        public void ReloadPlugins()
+        private void ReloadPlugins()
         {
-            Logger.Log(LogLevel.Info, "Unloading old plugin instances");
-            Destroy(scriptManager);
+            shouldReload = false;
+
+            if (scriptManager != null)
+            {
+                if (!QuietMode.Value) Logger.Log(LogLevel.Info, "Unloading old plugin instances");
+
+                foreach (var previouslyLoadedPlugin in scriptManager.GetComponents<BaseUnityPlugin>())
+                {
+                    var metadataGUID = previouslyLoadedPlugin.Info.Metadata.GUID;
+                    if (Chainloader.PluginInfos.ContainsKey(metadataGUID))
+                        Chainloader.PluginInfos.Remove(metadataGUID);
+                }
+
+                Destroy(scriptManager);
+            }
+
             scriptManager = new GameObject($"ScriptEngine_{DateTime.Now.Ticks}");
             DontDestroyOnLoad(scriptManager);
             scriptManager.hideFlags = HideFlags.HideAndDontSave;
 
-            var files = Directory.GetFiles(ScriptDirectory, "*.dll");
+            var files = Directory.GetFiles(ScriptDirectory, "*.dll", IncludeSubdirectories.Value ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly);
             if (files.Length > 0)
             {
-                foreach (string path in Directory.GetFiles(ScriptDirectory, "*.dll"))
+                foreach (string path in Directory.GetFiles(ScriptDirectory, "*.dll", IncludeSubdirectories.Value ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly))
                     LoadDLL(path, scriptManager);
 
-                Logger.LogMessage("Reloaded all plugins!");
+                if (!QuietMode.Value)
+                    Logger.LogMessage("Reloaded all plugins!");
             }
             else
             {
-                Logger.LogMessage("No plugins to reload");
+                if (!QuietMode.Value)
+                    Logger.LogMessage("No plugins to reload");
             }
         }
 
-        void LoadDLL(string path, GameObject obj)
+        private void LoadDLL(string path, GameObject obj)
         {
             var defaultResolver = new DefaultAssemblyResolver();
             defaultResolver.AddSearchDirectory(ScriptDirectory);
             defaultResolver.AddSearchDirectory(Paths.ManagedPath);
             defaultResolver.AddSearchDirectory(Paths.BepInExAssemblyDirectory);
 
-            Logger.Log(LogLevel.Info, $"Loading plugins from {path}");
+            if (!QuietMode.Value)
+                Logger.Log(LogLevel.Info, $"Loading plugins from {path}");
 
             using (var dll = AssemblyDefinition.ReadAssembly(path, new ReaderParameters { AssemblyResolver = defaultResolver }))
             {
@@ -99,29 +132,42 @@ namespace ScriptEngine
                     {
                         try
                         {
-                            if (typeof(BaseUnityPlugin).IsAssignableFrom(type))
-                            {
-                                var metadata = MetadataHelper.GetMetadata(type);
-                                if (metadata != null)
-                                {
-                                    var typeDefinition = dll.MainModule.Types.First(x => x.FullName == type.FullName);
-                                    var typeInfo = Chainloader.ToPluginInfo(typeDefinition);
-                                    Chainloader.PluginInfos[metadata.GUID] = typeInfo;
+                            if (!typeof(BaseUnityPlugin).IsAssignableFrom(type)) continue;
 
-                                    Logger.Log(LogLevel.Info, $"Loading {metadata.GUID}");
-                                    StartCoroutine(DelayAction(() =>
-                                    {
-                                        try
-                                        {
-                                            obj.gameObject.AddComponent(type);
-                                        }
-                                        catch (Exception e)
-                                        {
-                                            Logger.LogError($"Failed to load plugin {metadata.GUID} because of exception: {e}");
-                                        }
-                                    }));
+                            var metadata = MetadataHelper.GetMetadata(type);
+                            if (metadata == null) continue;
+
+                            if (!QuietMode.Value)
+                                Logger.Log(LogLevel.Info, $"Loading {metadata.GUID}");
+
+                            if (Chainloader.PluginInfos.TryGetValue(metadata.GUID, out var existingPluginInfo))
+                                throw new InvalidOperationException($"A plugin with GUID {metadata.GUID} is already loaded! ({existingPluginInfo.Metadata.Name} v{existingPluginInfo.Metadata.Version})");
+
+                            var typeDefinition = dll.MainModule.Types.First(x => x.FullName == type.FullName);
+                            var pluginInfo = Chainloader.ToPluginInfo(typeDefinition);
+
+                            StartCoroutine(DelayAction(() =>
+                            {
+                                try
+                                {
+                                    // Need to add to PluginInfos first because BaseUnityPlugin constructor (called by AddComponent below)
+                                    // looks in PluginInfos for an existing PluginInfo and uses it instead of creating a new one.
+                                    Chainloader.PluginInfos[metadata.GUID] = pluginInfo;
+
+                                    var instance = obj.AddComponent(type);
+
+                                    // Fill in properties that are normally set by Chainloader
+                                    var tv = Traverse.Create(pluginInfo);
+                                    tv.Property<BaseUnityPlugin>(nameof(pluginInfo.Instance)).Value = (BaseUnityPlugin)instance;
+                                    // Loading the assembly from memory causes Location to be lost
+                                    tv.Property<string>(nameof(pluginInfo.Location)).Value = path;
                                 }
-                            }
+                                catch (Exception e)
+                                {
+                                    Logger.LogError($"Failed to load plugin {metadata.GUID} because of exception: {e}");
+                                    Chainloader.PluginInfos.Remove(metadata.GUID);
+                                }
+                            }));
                         }
                         catch (Exception e)
                         {
@@ -130,6 +176,29 @@ namespace ScriptEngine
                     }
                 }
             }
+        }
+
+        private void StartFileSystemWatcher()
+        {
+            fileSystemWatcher = new FileSystemWatcher(ScriptDirectory)
+            {
+                IncludeSubdirectories = IncludeSubdirectories.Value
+            };
+            fileSystemWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName;
+            fileSystemWatcher.Filter = "*.dll";
+            fileSystemWatcher.Changed += FileChangedEventHandler;
+            fileSystemWatcher.Deleted += FileChangedEventHandler;
+            fileSystemWatcher.Created += FileChangedEventHandler;
+            fileSystemWatcher.Renamed += FileChangedEventHandler;
+            fileSystemWatcher.EnableRaisingEvents = true;
+        }
+
+        private void FileChangedEventHandler(object sender, FileSystemEventArgs args)
+        {
+            if (!QuietMode.Value)
+                Logger.LogInfo($"File {Path.GetFileName(args.Name)} changed. Delayed recompiling...");
+            shouldReload = true;
+            autoReloadTimer = AutoReloadDelay.Value;
         }
 
         private IEnumerable<Type> GetTypesSafe(Assembly ass)
@@ -151,7 +220,7 @@ namespace ScriptEngine
             }
         }
 
-        IEnumerator DelayAction(Action action)
+        private IEnumerator DelayAction(Action action)
         {
             yield return null;
             action();
