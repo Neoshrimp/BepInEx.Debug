@@ -42,7 +42,7 @@ namespace ScriptEngine
             LoadOnStart = Config.Bind("General", "LoadOnStart", true, new ConfigDescription("Load all plugins from the scripts folder when starting the application. This is done from inside of Chainloader's Awake, therefore not all plugis might be loaded yet. BepInDependency attributes are ignored."));
             ReloadKey = Config.Bind("General", "ReloadKey", new KeyboardShortcut(KeyCode.F6), new ConfigDescription("Press this key to reload all the plugins from the scripts folder"));
             QuietMode = Config.Bind("General", "QuietMode", false, new ConfigDescription("Disable all logging except for error messages."));
-            IncludeSubdirectories = Config.Bind("General", "IncludeSubdirectories", false, new ConfigDescription("Also load plugins from subdirectories of the scripts folder."));
+            IncludeSubdirectories = Config.Bind("General", "IncludeSubdirectories", true, new ConfigDescription("Also load plugins from subdirectories of the scripts folder."));
             EnableFileSystemWatcher = Config.Bind("AutoReload", "EnableFileSystemWatcher", false, new ConfigDescription("Watches the scripts directory for file changes and automatically reloads all plugins if any of the files gets changed (added/removed/modified)."));
             AutoReloadDelay = Config.Bind("AutoReload", "AutoReloadDelay", 3.0f, new ConfigDescription("Delay in seconds from detecting a change to files in the scripts directory to plugins being reloaded. Affects only EnableFileSystemWatcher."));
 
@@ -154,13 +154,16 @@ namespace ScriptEngine
                                     // looks in PluginInfos for an existing PluginInfo and uses it instead of creating a new one.
                                     Chainloader.PluginInfos[metadata.GUID] = pluginInfo;
 
-                                    var instance = obj.AddComponent(type);
+                                    object instance = null;
 
                                     // Fill in properties that are normally set by Chainloader
                                     var tv = Traverse.Create(pluginInfo);
                                     tv.Property<BaseUnityPlugin>(nameof(pluginInfo.Instance)).Value = (BaseUnityPlugin)instance;
                                     // Loading the assembly from memory causes Location to be lost
                                     tv.Property<string>(nameof(pluginInfo.Location)).Value = path;
+
+                                    // instantiate Plugin object after info has been set
+                                    instance = obj.AddComponent(type);
                                 }
                                 catch (Exception e)
                                 {
