@@ -40,7 +40,7 @@ namespace ScriptEngine
         private void Awake()
         {
             LoadOnStart = Config.Bind("General", "LoadOnStart", true, new ConfigDescription("Load all plugins from the scripts folder when starting the application. This is done from inside of Chainloader's Awake, therefore not all plugis might be loaded yet. BepInDependency attributes are ignored."));
-            ReloadKey = Config.Bind("General", "ReloadKey", new KeyboardShortcut(KeyCode.F6), new ConfigDescription("Press this key to reload all the plugins from the scripts folder"));
+            ReloadKey = Config.Bind("General", "ReloadKey", new KeyboardShortcut(KeyCode.F7), new ConfigDescription("Press this key to reload all the plugins from the scripts folder"));
             QuietMode = Config.Bind("General", "QuietMode", false, new ConfigDescription("Disable all logging except for error messages."));
             IncludeSubdirectories = Config.Bind("General", "IncludeSubdirectories", true, new ConfigDescription("Also load plugins from subdirectories of the scripts folder."));
             EnableFileSystemWatcher = Config.Bind("AutoReload", "EnableFileSystemWatcher", false, new ConfigDescription("Watches the scripts directory for file changes and automatically reloads all plugins if any of the files gets changed (added/removed/modified)."));
